@@ -8,6 +8,8 @@ This repository contains three tools:
 2. **A single-page browser app** that converts static images or animated GIFs into animated triangle-based SVGs (with embedded JSON for rendering in Godot).
 3. **A Godot game script** that renders the generated SVG's with various controls for rendering.
 
+> Disclaimer: These files are heavily vibe-coded, and have had very little code review other than "does it work". Use at your own risk.
+
 ## Demo
 
 [![Watch a demo](https://img.youtube.com/vi/ECTalxaMlKA/hqdefault.jpg)](https://www.youtube.com/watch?v=ECTalxaMlKA)

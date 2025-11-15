@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Pixel → Triangle SVG (merged polys + nudges, 1:1)</title>
+<style>
+  body{font:14px system-ui,sans-serif;margin:20px;color:#222}
+  header{display:flex;gap:12px;flex-wrap:wrap;align-items:end}
+  input[type="number"]{width:6rem}
+  #out{margin-top:12px;border:1px solid #ddd;min-height:220px;padding:8px;overflow:auto;background:#fafafa}
+  svg{max-width:100%}
+  .err{color:#b00;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<header>
+  <label>Image/GIF <input id="file" type="file" accept="image/*,.gif"></label>
+  <label>Triangle side <input id="side" type="number" min="2" step="1" value="16"></label>
+  <label>Orientation
+    <select id="orient">
+      <option value="rows" selected>Rows (up/down)</option>
+      <option value="cols">Columns (left/right)</option>
+    </select>
+  </label>
+  <label>Nudge X <input id="nudgeX" type="number" min="-10" max="10" step="1" value="0"></label>
+  <label>Nudge Y <input id="nudgeY" type="number" min="-10" max="10" step="1" value="0"></label>
+  <button id="go">Generate</button>
+  <button id="save" disabled>Download SVG</button>
+</header>
+
+<div id="out">Upload an image or GIF and click Generate.</div>
+
+<script>
+/* ---------------- gifuct loader with fallbacks ---------------- */
+async function loadGifuct() {
+  if (window.gifuct?.parseGIF) return;
+  const urls = [
+    "https://cdn.jsdelivr.net/npm/gifuct-js@2.1.2/dist/gifuct.min.js",
+    "https://unpkg.com/gifuct-js@2.1.2/dist/gifuct.min.js"
+  ];
+  const tryScript = src => new Promise((res,rej)=>{
+    const s=document.createElement("script");
+    s.src=src; s.async=true; s.crossOrigin="anonymous";
+    s.onload=()=>res(); s.onerror=()=>rej();
+    document.head.appendChild(s);
+  });
+  for (const u of urls) { try { await tryScript(u); if (window.gifuct?.parseGIF) return; } catch {} }
+  await new Promise((resolve,reject)=>{
+    const m=document.createElement("script"); m.type="module";
+    m.textContent=`import * as M from "https://esm.sh/gifuct-js@2.1.2?bundle";
+      window.gifuct={parseGIF:M.parseGIF,decompressFrames:M.decompressFrames};
+      window.dispatchEvent(new Event("gifuct-ready"));`;
+    window.addEventListener("gifuct-ready",resolve,{once:true});
+    m.onerror=()=>reject();
+    document.head.appendChild(m);
+  });
+}
+
+/* ---------------- GIF → full-frame RGBA buffers (exact timing) ---------------- */
+function delayToMs(val){
+  // Normalize encoder quirks: if it's big, assume ms; otherwise centiseconds.
+  if (val == null) return 100;
+  return (val >= 60) ? val : val * 10;
+}
+
+async function gifToBuffers(buf){
+  const gif = window.gifuct.parseGIF(buf);
+  const raw = window.gifuct.decompressFrames(gif, true);
+  const W = gif.lsd.width, H = gif.lsd.height;
+
+  const can=document.createElement("canvas"); can.width=W; can.height=H;
+  const ctx=can.getContext("2d",{willReadFrequently:true});
+
+  const frames=[]; let prev=null, snap=null;
+  for (let i=0;i<raw.length;i++){
+    const f=raw[i];
+    if (prev){
+      if (prev.disposalType===2) ctx.clearRect(prev.dims.left,prev.dims.top,prev.dims.width,prev.dims.height);
+      else if (prev.disposalType===3 && snap) ctx.putImageData(snap,0,0);
+    }
+    snap = (f.disposalType===3) ? ctx.getImageData(0,0,W,H) : null;
+
+    const id=new ImageData(f.patch,f.dims.width,f.dims.height);
+    ctx.putImageData(id,f.dims.left,f.dims.top);
+
+    const full=ctx.getImageData(0,0,W,H);
+    const ms = Math.max(1, delayToMs(f.delay)); // no clamping, just a 1ms floor
+    frames.push({data:full.data,w:W,h:H,duration:ms});
+    prev=f;
+  }
+  return frames;
+}
+
+/* ---------------- Static image → one RGBA buffer ---------------- */
+async function imageToBuffer(file){
+  const img = await blobToImage(file);
+  const c=document.createElement("canvas"); c.width=img.width; c.height=img.height;
+  const x=c.getContext("2d",{willReadFrequently:true}); x.imageSmoothingEnabled=false;
+  x.drawImage(img,0,0);
+  const id=x.getImageData(0,0,c.width,c.height);
+  return [{data:id.data,w:c.width,h:c.height,duration:100}];
+}
+
+/* ---------------- UI ---------------- */
+const $=s=>document.querySelector(s);
+const fileEl=$("#file"), sideEl=$("#side"), orientEl=$("#orient"), nudgeXEl=$("#nudgeX"), nudgeYEl=$("#nudgeY");
+const out=$("#out"), go=$("#go"), saveBtn=$("#save");
+let lastSVG="";
+
+go.onclick = async () => {
+  const f=fileEl.files?.[0];
+  if (!f) { alert("Choose a file."); return; }
+  out.textContent="Processing...";
+
+  try{
+    let frames;
+    if (/\.gif$/i.test(f.name) || f.type==="image/gif"){ await loadGifuct(); frames=await gifToBuffers(await f.arrayBuffer()); }
+    else { frames = await imageToBuffer(f); }
+
+    lastSVG = buffersToMergedTriSVG(
+      frames,
+      Math.max(2, Math.round(+sideEl.value||16)),
+      orientEl.value,
+      Math.round(+nudgeXEl.value||0),
+      Math.round(+nudgeYEl.value||0)
+    );
+    out.innerHTML = lastSVG;
+    saveBtn.disabled = false;
+  }catch(e){
+    console.error(e);
+    out.innerHTML = `<div class="err">${e?.message||e}</div>`;
+    saveBtn.disabled=true;
+  }
+};
+
+saveBtn.onclick=()=>{
+  const blob=new Blob([lastSVG],{type:"image/svg+xml"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="triangulated.svg"; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1500);
+};
+
+/* ---------------- Core: merge-adjacent triangles into polygons (1:1 + nudges) ---------------- */
+function buffersToMergedTriSVG(frames, side, orient, nudgeX, nudgeY){
+  const srcW=frames[0].w, srcH=frames[0].h;
+  const outW = srcW; // 1:1
+  const outH = srcH; // 1:1
+
+  // build nearest-neighbor sampling with integer nudges
+  const clamp=(v,min,max)=> v<min?min:(v>max?max:v);
+  const mapX=new Uint16Array(outW), mapY=new Uint16Array(outH);
+  for(let x=0;x<outW;x++) mapX[x]=clamp(x+nudgeX,0,srcW-1);
+  for(let y=0;y<outH;y++) mapY[y]=clamp(y+nudgeY,0,srcH-1);
+
+  const hTri=side*Math.sqrt(3)/2;
+
+  // svg size
+  const W = (orient==="rows") ? ((outW-1)*(side/2)+side) : (outW*side);
+  const H = (orient==="rows") ? (outH*hTri) : (((outH-1)*(hTri/2)+hTri));
+
+  // persistence for unchanged transparent pixels at output res
+  const prevRGB=new Uint8ClampedArray(outW*outH*3);
+
+  const groups=[]; let total=0;
+
+  for(const fr of frames){
+    const data=fr.data;
+
+    const colorEdges=new Map(); // colorHex -> Map(edgeKey, [ax,ay,bx,by])
+    const pointStore=new Map();
+
+    const addTri=(color, A,B,C)=>{
+      const edges=[[A,B],[B,C],[C,A]];
+      let E=colorEdges.get(color); if(!E){E=new Map(); colorEdges.set(color,E);}
+      for(const [P,Q] of edges){
+        const a=keyPt(P), b=keyPt(Q);
+        const ekey = a<b ? a+"|"+b : b+"|"+a;
+        if (E.has(ekey)) { E.delete(ekey); }
+        else { E.set(ekey,[P[0],P[1],Q[0],Q[1]]); }
+        pointStore.set(a,P); pointStore.set(b,Q);
+      }
+    };
+
+    if (orient==="rows"){
+      for(let y=0;y<outH;y++){
+        const Y=y*hTri, sy=mapY[y];
+        for(let x=0;x<outW;x++){
+          const X=x*(side/2), sx=mapX[x];
+          const i=(sy*srcW+sx)*4;
+          let r=data[i], g=data[i+1], b=data[i+2], a=data[i+3];
+          const oi=(y*outW+x)*3;
+          if (a===0){ r=prevRGB[oi]; g=prevRGB[oi+1]; b=prevRGB[oi+2]; if(r===0&&g===0&&b===0) continue; }
+          else { prevRGB[oi]=r; prevRGB[oi+1]=g; prevRGB[oi+2]=b; }
+          const col = hex(r,g,b);
+          if (((x+y)&1)===0){
+            const A=[X, Y+hTri], B=[X+side/2, Y], C=[X+side, Y+hTri];
+            addTri(col,A,B,C);
+          } else {
+            const A=[X, Y], B=[X+side/2, Y+hTri], C=[X+side, Y];
+            addTri(col,A,B,C);
+          }
+        }
+      }
+    } else {
+      for(let y=0;y<outH;y++){
+        const Y=y*(hTri/2), sy=mapY[y];
+        for(let x=0;x<outW;x++){
+          const X=x*side, sx=mapX[x];
+          const i=(sy*srcW+sx)*4;
+          let r=data[i], g=data[i+1], b=data[i+2], a=data[i+3];
+          const oi=(y*outW+x)*3;
+          if (a===0){ r=prevRGB[oi]; g=prevRGB[oi+1]; b=prevRGB[oi+2]; if(r===0&&g===0&&b===0) continue; }
+          else { prevRGB[oi]=r; prevRGB[oi+1]=g; prevRGB[oi+2]=b; }
+          const col = hex(r,g,b);
+          if (((x+y)&1)===0){
+            const A=[X, Y], B=[X, Y+hTri], C=[X+side, Y+hTri/2];
+            addTri(col,A,B,C);
+          } else {
+            const A=[X+side, Y], B=[X+side, Y+hTri], C=[X, Y+hTri/2];
+            addTri(col,A,B,C);
+          }
+        }
+      }
+    }
+
+    // Build <path> per color by tracing remaining boundary edges
+    const paths=[];
+    for (const [color, E] of colorEdges.entries()){
+      const adj=new Map(); // pointKey -> Set(neighborPointKey)
+      for (const v of E.values()){
+        const a=[v[0],v[1]], b=[v[2],v[3]];
+        const ak=keyPt(a), bk=keyPt(b);
+        if(!adj.has(ak)) adj.set(ak,new Set());
+        if(!adj.has(bk)) adj.set(bk,new Set());
+        adj.get(ak).add(bk); adj.get(bk).add(ak);
+      }
+      const unused = new Set(E.keys());
+      const edgeKey=(u,v)=> (u<v?u+"|"+v:v+"|"+u);
+      const dParts=[];
+
+      while (unused.size){
+        const firstKey = unused.values().next().value;
+        const [ax,ay,bx,by] = E.get(firstKey);
+        const start = keyPt([ax,ay]);
+        let cur   = keyPt([bx,by]);
+
+        unused.delete(firstKey);
+
+        const coords = [pointStore.get(start)];
+        while (true){
+          coords.push(pointStore.get(cur));
+          const neigh = adj.get(cur) || new Set();
+          let next = null;
+          for (const nb of neigh){
+            const k=edgeKey(cur,nb);
+            if (unused.has(k)){ next=nb; break; }
+          }
+          if (!next) {
+            if (cur === start) break;
+            const kBack=edgeKey(cur,start);
+            if (unused.has(kBack)){ unused.delete(kBack); cur=start; coords.push(pointStore.get(cur)); break; }
+            else break;
+          }
+          unused.delete(edgeKey(cur,next));
+          cur = next;
+          if (cur === start){ coords.push(pointStore.get(cur)); break; }
+        }
+
+        if (coords.length>=3){
+          const seg = "M "+coords.map(p=>fmt(p[0])+" "+fmt(p[1])).join(" L ")+" Z";
+          dParts.push(seg);
+        }
+      }
+      if (dParts.length){
+        paths.push(`<path d="${dParts.join(" ")}" fill="${color}" fill-rule="evenodd"/>`);
+      }
+    }
+
+    const dur = Math.max(1, (fr.duration|0) || 100); // exact timing; no clamping
+    groups.push({svg:paths.join(""), dur});
+    total += dur;
+  }
+
+  if (groups.length===1){
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"><style>path{shape-rendering:crispEdges}</style>${groups[0].svg}</svg>`;
+  }
+
+  // Discrete CSS animation from cumulative timings
+  const keyPct=[0]; for(let i=0;i<groups.length;i++) keyPct.push(keyPct[i]+groups[i].dur/total);
+  let css="", rules="";
+  groups.forEach((g,i)=>{
+    const s=(keyPct[i]*100).toFixed(4), e=(keyPct[i+1]*100).toFixed(4);
+    css+=`#f${i}{opacity:0}\n@keyframes a${i}{${s}%{opacity:1}${e}%{opacity:0}}\n`;
+    rules+=`#f${i}{animation:a${i} ${total}ms infinite step-end;}`;
+  });
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">
+  <style>path{shape-rendering:crispEdges}${css}${rules}</style>
+  ${groups.map((g,i)=>`<g id="f${i}">${g.svg}</g>`).join("")}
+  </svg>`;
+}
+
+/* ---------------- utilities ---------------- */
+function hex(r,g,b){ return "#"+[r,g,b].map(v=>v.toString(16).padStart(2,"0")).join(""); }
+function fmt(n){ return n.toFixed(2); }
+function keyPt(p){ return fmt(p[0])+","+fmt(p[1]); }
+function blobToImage(blob){
+  return new Promise((res,rej)=>{
+    const u=URL.createObjectURL(blob);
+    const i=new Image();
+    i.onload=()=>{URL.revokeObjectURL(u);res(i)};
+    i.onerror=rej; i.src=u;
+  });
+}
+</script>
+</body>
+</html>

@@ -10,7 +10,7 @@ This repository contains three tools:
 
 ## Demo
 
-[![Watch a demo](https://img.youtube.com/vi/Qss9QoZXxWs/hqdefault.jpg)](https://www.youtube.com/watch?v=Qss9QoZXxWs)
+[![Watch a demo](https://img.youtube.com/vi/ECTalxaMlKA/hqdefault.jpg)](https://www.youtube.com/watch?v=ECTalxaMlKA)
 
 ## 1. Aseprite Preview Script
 

@@ -27,6 +27,7 @@
   <label>Nudge Y <input id="nudgeY" type="number" min="-10" max="10" step="1" value="0"></label>
   <button id="go">Generate</button>
   <button id="save" disabled>Download SVG</button>
+  <button id="saveJson" disabled>Download Godot JSON</button>
 </header>
 
 <div id="out">Upload an image or GIF and click Generate.</div>
@@ -105,8 +106,9 @@ async function imageToBuffer(file){
 /* ---------------- UI ---------------- */
 const $=s=>document.querySelector(s);
 const fileEl=$("#file"), sideEl=$("#side"), orientEl=$("#orient"), nudgeXEl=$("#nudgeX"), nudgeYEl=$("#nudgeY");
-const out=$("#out"), go=$("#go"), saveBtn=$("#save");
+const out=$("#out"), go=$("#go"), saveBtn=$("#save"), saveJsonBtn=$("#saveJson");
 let lastSVG="";
+let lastJSON="";
 
 go.onclick = async () => {
   const f=fileEl.files?.[0];
@@ -118,25 +120,36 @@ go.onclick = async () => {
     if (/\.gif$/i.test(f.name) || f.type==="image/gif"){ await loadGifuct(); frames=await gifToBuffers(await f.arrayBuffer()); }
     else { frames = await imageToBuffer(f); }
 
-    lastSVG = buffersToMergedTriSVG(
+    const res = buffersToMergedTriSVG(
       frames,
       Math.max(2, Math.round(+sideEl.value||16)),
       orientEl.value,
       Math.round(+nudgeXEl.value||0),
       Math.round(+nudgeYEl.value||0)
     );
+    lastSVG = res.svg;
+    lastJSON = JSON.stringify(res.godot, null, 2);
     out.innerHTML = lastSVG;
     saveBtn.disabled = false;
+    saveJsonBtn.disabled = false;
   }catch(e){
     console.error(e);
     out.innerHTML = `<div class="err">${e?.message||e}</div>`;
     saveBtn.disabled=true;
+    saveJsonBtn.disabled=true;
   }
 };
 
 saveBtn.onclick=()=>{
   const blob=new Blob([lastSVG],{type:"image/svg+xml"});
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="triangulated.svg"; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1500);
+};
+
+saveJsonBtn.onclick=()=>{
+  if (!lastJSON) return;
+  const blob=new Blob([lastJSON],{type:"application/json"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="triangulated.json"; a.click();
   setTimeout(()=>URL.revokeObjectURL(a.href),1500);
 };
 
@@ -159,9 +172,10 @@ function buffersToMergedTriSVG(frames, side, orient, nudgeX, nudgeY){
   const H = (orient==="rows") ? (outH*hTri) : (((outH-1)*(hTri/2)+hTri));
 
   // persistence for unchanged transparent pixels at output res
-  const prevRGB=new Uint8ClampedArray(outW*outH*3);
+  // const prevRGB=new Uint8ClampedArray(outW*outH*3);
 
   const groups=[]; let total=0;
+  const godotFrames = [];
 
   for(const fr of frames){
     const data=fr.data;
@@ -188,9 +202,7 @@ function buffersToMergedTriSVG(frames, side, orient, nudgeX, nudgeY){
           const X=x*(side/2), sx=mapX[x];
           const i=(sy*srcW+sx)*4;
           let r=data[i], g=data[i+1], b=data[i+2], a=data[i+3];
-          const oi=(y*outW+x)*3;
-          if (a===0){ r=prevRGB[oi]; g=prevRGB[oi+1]; b=prevRGB[oi+2]; if(r===0&&g===0&&b===0) continue; }
-          else { prevRGB[oi]=r; prevRGB[oi+1]=g; prevRGB[oi+2]=b; }
+          if (a === 0) continue; // fully transparent: no triangle for this pixel
           const col = hex(r,g,b);
           if (((x+y)&1)===0){
             const A=[X, Y+hTri], B=[X+side/2, Y], C=[X+side, Y+hTri];
@@ -208,9 +220,7 @@ function buffersToMergedTriSVG(frames, side, orient, nudgeX, nudgeY){
           const X=x*side, sx=mapX[x];
           const i=(sy*srcW+sx)*4;
           let r=data[i], g=data[i+1], b=data[i+2], a=data[i+3];
-          const oi=(y*outW+x)*3;
-          if (a===0){ r=prevRGB[oi]; g=prevRGB[oi+1]; b=prevRGB[oi+2]; if(r===0&&g===0&&b===0) continue; }
-          else { prevRGB[oi]=r; prevRGB[oi+1]=g; prevRGB[oi+2]=b; }
+          if (a === 0) continue; // fully transparent: no triangle for this pixel
           const col = hex(r,g,b);
           if (((x+y)&1)===0){
             const A=[X, Y], B=[X, Y+hTri], C=[X+side, Y+hTri/2];
@@ -225,6 +235,7 @@ function buffersToMergedTriSVG(frames, side, orient, nudgeX, nudgeY){
 
     // Build <path> per color by tracing remaining boundary edges
     const paths=[];
+    const framePolys=[];
     for (const [color, E] of colorEdges.entries()){
       const adj=new Map(); // pointKey -> Set(neighborPointKey)
       for (const v of E.values()){
@@ -269,6 +280,11 @@ function buffersToMergedTriSVG(frames, side, orient, nudgeX, nudgeY){
         if (coords.length>=3){
           const seg = "M "+coords.map(p=>fmt(p[0])+" "+fmt(p[1])).join(" L ")+" Z";
           dParts.push(seg);
+          // Store polygon for Godot: raw float coordinates
+          framePolys.push({
+            color,
+            points: coords.map(p=>[p[0], p[1]])
+          });
         }
       }
       if (dParts.length){
@@ -278,26 +294,42 @@ function buffersToMergedTriSVG(frames, side, orient, nudgeX, nudgeY){
 
     const dur = Math.max(1, (fr.duration|0) || 100); // exact timing; no clamping
     groups.push({svg:paths.join(""), dur});
+    godotFrames.push({ duration: dur, polygons: framePolys });
     total += dur;
   }
 
+  const godotData = {
+    width: W,
+    height: H,
+    side,
+    orient,
+    frames: godotFrames,
+  };
+
+  // Embed Godot JSON as a comment at the top of the SVG so a single file
+  // can be used both for preview (as SVG) and as data (for Godot).
+  const godotJson = JSON.stringify(godotData);
+  const comment = `\n<!-- GODOT_TRI ${godotJson} -->\n`;
+
+  let svgStr="";
   if (groups.length===1){
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"><style>path{shape-rendering:crispEdges}</style>${groups[0].svg}</svg>`;
-  }
-
-  // Discrete CSS animation from cumulative timings
-  const keyPct=[0]; for(let i=0;i<groups.length;i++) keyPct.push(keyPct[i]+groups[i].dur/total);
-  let css="", rules="";
-  groups.forEach((g,i)=>{
-    const s=(keyPct[i]*100).toFixed(4), e=(keyPct[i+1]*100).toFixed(4);
-    css+=`#f${i}{opacity:0}\n@keyframes a${i}{${s}%{opacity:1}${e}%{opacity:0}}\n`;
-    rules+=`#f${i}{animation:a${i} ${total}ms infinite step-end;}`;
-  });
-
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">
-  <style>path{shape-rendering:crispEdges}${css}${rules}</style>
+    svgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"><style>path{shape-rendering:crispEdges}</style>${comment}${groups[0].svg}</svg>`;
+  } else {
+    // Discrete CSS animation from cumulative timings
+    const keyPct=[0]; for(let i=0;i<groups.length;i++) keyPct.push(keyPct[i]+groups[i].dur/total);
+    let css="", rules="";
+    groups.forEach((g,i)=>{
+      const s=(keyPct[i]*100).toFixed(4), e=(keyPct[i+1]*100).toFixed(4);
+      css+=`#f${i}{opacity:0}\n@keyframes a${i}{${s}%{opacity:1}${e}%{opacity:0}}\n`;
+      rules+=`#f${i}{animation:a${i} ${total}ms infinite step-end;}`;
+    });
+    svgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">
+  <style>path{shape-rendering:crispEdges}${css}${rules}</style>${comment}
   ${groups.map((g,i)=>`<g id="f${i}">${g.svg}</g>`).join("")}
   </svg>`;
+  }
+
+  return { svg: svgStr, godot: godotData };
 }
 
 /* ---------------- utilities ---------------- */

@@ -2,28 +2,17 @@
 
 Convert pixel art into **triangle-based vector graphics** as **SVG**, previewing the result directly inside **Aseprite** as you work.
 
-This repository contains two tools:
+This repository contains three tools:
 
-1. **A single-page browser app** that converts static images or animated GIFs into animated triangle-based SVGs.
-2. **An Aseprite script** that generates a live triangle-rendered preview of any sprite frame or animation.
+1. **An Aseprite script** that generates a live triangle-rendered preview of any sprite frame or animation.
+2. **A single-page browser app** that converts static images or animated GIFs into animated triangle-based SVGs (with embedded JSON for rendering in Godot).
+3. **A Godot game script** that renders the generated SVG's with various controls for rendering.
 
 ## Demo
 
 [![Watch a demo](https://img.youtube.com/vi/Qss9QoZXxWs/hqdefault.jpg)](https://www.youtube.com/watch?v=Qss9QoZXxWs)
 
-## 1. SVG Converter (Browser App)
-
-**[A standalone HTML file](./web)** that runs entirely in the browser - just open it locally.
-
-### Features
-
-- Upload **PNG**, **JPG**, or **GIF** (including animated GIFs).
-- Converts each pixel into one or two **flat-colored triangles** depending on the chosen orientation.
-- Outputs:
-  - A single SVG file for static images.
-  - A CSS-keyframed, multi-frame **animated SVG** for GIFs.
-
-## 2. Aseprite Preview Script
+## 1. Aseprite Preview Script
 
 **[A script](./aseprite_scripts)** that adds a **live vector-style triangle preview window** to Aseprite. To use it, in Aseprite:
 
@@ -45,3 +34,29 @@ These tools form a simple but flexible pipeline:
 1. Design pixel art in Aseprite.
 2. Preview triangle conversion live using the Aseprite script.
 3. Export via the SVG converter app.
+
+## 2. SVG Converter (Browser App)
+
+**[A standalone HTML file](./web)** that runs entirely in the browser - just open it locally.
+
+### Features
+
+- Upload **PNG**, **JPG**, or **GIF** (including animated GIFs).
+- Converts each pixel into one or two **flat-colored triangles** depending on the chosen orientation.
+- Outputs:
+  - A single SVG file for static images.
+  - A CSS-keyframed, multi-frame **animated SVG** for GIFs.
+  - The SVG file contained embedded rendering config for the below Godot script.
+
+## 3. Godot 2D Node Renderer
+
+**[A GD Script](./godot/)** that can render the generated `.svg` files (that have the embedded rendering configurations).
+
+- Create a 2D Node
+- Attach the included script
+- Choose a generated SVG as the data source (check the logs for any errors)
+- It offers some rendering parameters out of the box:
+  - Color Tinting
+  - Animation speed
+  - Opacity
+- It also plays nicely with the default Transformations (like scaling and rotation)
